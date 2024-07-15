@@ -18,7 +18,11 @@
 import { splitPath, foreach, decodeVarint } from "./utils";
 import type Transport from "@ledgerhq/hw-transport";
 import { signTIP712HashedMessage } from "./TIP712";
+import { LedgerTrxTransactionResolution, LoadConfig } from "./services/types";
+import { ledgerService } from "./services/ledger";
+import { deserializeContractInfoFromHex } from "./services/contract";
 
+export { ledgerService };
 const remapTransactionRelatedErrors = e => {
   if (e && e.statusCode === 0x6a80) {
     // TODO:
@@ -33,6 +37,7 @@ const CLA = 0xe0;
 const ADDRESS = 0x02;
 const SIGN = 0x04;
 const SIGN_HASH = 0x05;
+const CLEAR_SIGN = 0xc4;
 const SIGN_MESSAGE = 0x08;
 const ECDH_SECRET = 0x0a;
 const VERSION = 0x06;
@@ -47,9 +52,15 @@ const CHUNK_SIZE = 250;
 
 export default class Trx {
   transport: Transport;
+  loadConfig: LoadConfig;
 
-  constructor(transport: Transport, scrambleKey = "TRX") {
+  setLoadConfig(loadConfig: LoadConfig): void {
+    this.loadConfig = loadConfig;
+  }
+
+  constructor(transport: Transport, scrambleKey = "TRX", loadConfig: LoadConfig = {}) {
     this.transport = transport;
+    this.loadConfig = loadConfig;
     transport.decorateAppAPIMethods(
       this,
       [
@@ -114,13 +125,44 @@ export default class Trx {
    * @param path a path in BIP 32 format
    * @param rawTxHex a raw transaction hex string
    * @param tokenSignatures Tokens Signatures array
+   * @param resolution plugin infomations for clear sign. Only supported when sign a TriggerSmartContract transaction. 
+   *        - If the value is "null", clear sign will be disabled.
+   *        - If the value is "undefined", default resolution will be used.
    * @option version pack message based on ledger firmware version
    * @option smartContract boolean hack to set limit buffer on ledger device
    * @return a signature as hex string
    * @example
-   * const signature = await tron.signTransaction("44'/195'/0'/0/0", "0a02f5942208704dda506d59dceb40f0f4978f802e5a69080112650a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412340a1541978dbd103cfe59c35e753d09dd44ae1ae64621c7121541e2ae49db6a70b9b4757d2137a43b69b24a445780188ef8b5ba0470cbb5948f802e", [], 105);
+   * import { ledgerService } from '@ledgerhq/hw-app-trx';
+   * const rawTxHex = "0a0267a42208cb83283f5927a5e040c8badeb489325ab001081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541e2ae49db6a70b9b4757d2137a43b69b24a4457801215410e1bce983f78f8913002c3f7e52daf78de6da2cb2244a9059cbb000000000000000000000000573708726db88a32c1b9c828fef508577cfb8483000000000000000000000000000000000000000000000000000000000000000a286470a6f8dab48932900180ade204";
+   * const resolution = await ledgerService.resolveTransaction(rawTxHex);
+   * const signature = await tron.signTransaction("44'/195'/0'/0/0", rawTxHex, [], resolution);
    */
-  signTransaction(path: string, rawTxHex: string, tokenSignatures: string[]): Promise<string> {
+  async signTransaction(path: string, rawTxHex: string, tokenSignatures: string[], resolution?: LedgerTrxTransactionResolution | null): Promise<string> {
+    if (resolution === null || !deserializeContractInfoFromHex(rawTxHex)) {
+      return this._signTransaction(path, rawTxHex, tokenSignatures);
+    }
+    if (resolution === undefined) {
+      console.log(`[hw-app-trx]: signTransaction(path, rawTxHex, resolution):no resolution provided and use default service to get plugin information.`)
+      resolution = await ledgerService.resolveTransaction(rawTxHex, this.loadConfig)
+        .catch(e => {
+          console.warn(`[hw-app-trx]: an error occurred in resolveTransaction => fallback to blind signing: ${String(e)}`);
+          return null
+        });
+    }
+    if (!resolution || resolution.externalPlugin.length === 0) {
+      console.warn("[hw-app-trx]: signTransaction(path, rawTxHex, resolution): " +
+        "'resolution' is missing and Ledger will use blind signing."
+      );
+      return this._signTransaction(path, rawTxHex, tokenSignatures);
+    }
+    for (const { payload, signature } of resolution.externalPlugin) {
+      await this.setExternalPlugin(payload, signature);
+    }
+    return this._clearSignTransaction(path, rawTxHex);
+  }
+
+
+  private _signTransaction(path: string, rawTxHex: string, tokenSignatures: string[]): Promise<string> {
     const paths = splitPath(path);
     let rawTx = Buffer.from(rawTxHex, "hex");
     const toSend: Buffer[] = [];
@@ -194,6 +236,54 @@ export default class Trx {
     );
   }
 
+  private _clearSignTransaction(path: string, rawTxHex: string) {
+    const paths = splitPath(path);
+    let rawTx = Buffer.from(rawTxHex, "hex");
+    const toSend: Buffer[] = [];
+    let data = Buffer.alloc(PATHS_LENGTH_SIZE + paths.length * PATH_SIZE);
+    // write path for first chunk only
+    data[0] = paths.length;
+    paths.forEach((element, index) => {
+      data.writeUInt32BE(element, 1 + 4 * index);
+    });
+
+    while (rawTx.length > 0) {
+      const newPos = CHUNK_SIZE - data.length;
+      const buffer = Buffer.concat([data, rawTx.slice(0, newPos)]);
+      toSend.push(buffer);
+      data = Buffer.alloc(0);
+      rawTx = rawTx.slice(newPos, rawTx.length);
+    }
+
+    const startBytes: number[] = [];
+    let response;
+
+    // get startBytes
+    if (toSend.length === 1) {
+      startBytes.push(0x10);
+    } else {
+      startBytes.push(0x00);
+
+      for (let i = 1; i < toSend.length - 1; i += 1) {
+        startBytes.push(0x80);
+      }
+      startBytes.push(0x90);
+    }
+
+    return foreach(toSend, (data, i) => {
+      return this.transport.send(CLA, CLEAR_SIGN, startBytes[i], 0x00, data).then(apduResponse => {
+        response = apduResponse;
+      });
+    }).then(
+      () => {
+        return response.slice(0, 65).toString("hex");
+      },
+      e => {
+        throw remapTransactionRelatedErrors(e);
+      },
+    );
+  }
+
   /**
    * sign a Tron transaction hash with a given BIP 32 path
    *
@@ -214,6 +304,24 @@ export default class Trx {
     return this.transport.send(CLA, SIGN_HASH, 0x00, 0x00, data).then(response => {
       return response.slice(0, 65).toString("hex");
     });
+  }
+
+  /**
+   * sign a Tron transaction with a given BIP 32 using clear signing. This method will use default plugin service to resolve the plugin for transaction.
+   * @param path a path in BIP 32 format
+   * @param rawTxHex a raw transaction hex string
+   * @return a signature as hex string
+   * @example
+   * const signature = await tron.clearSignTransaction("44'/195'/0'/0/0", "0a0267a42208cb83283f5927a5e040c8badeb489325ab001081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541e2ae49db6a70b9b4757d2137a43b69b24a4457801215410e1bce983f78f8913002c3f7e52daf78de6da2cb2244a9059cbb000000000000000000000000573708726db88a32c1b9c828fef508577cfb8483000000000000000000000000000000000000000000000000000000000000000a286470a6f8dab48932900180ade204");
+   */
+  async clearSignTransaction(path: string, rawTxHex: string) {
+    const resolution = await ledgerService.resolveTransaction(rawTxHex, this.loadConfig)
+      .catch(e => {
+        console.warn(`[hw-app-trx]: an error occurred in resolveTransaction => fallback to blind signing: ${String(e)}`);
+        return null
+      });
+
+    return this.signTransaction(path, rawTxHex, [], resolution);
   }
 
   /**
@@ -351,4 +459,35 @@ export default class Trx {
       .send(CLA, ECDH_SECRET, 0x00, 0x01, buffer)
       .then(response => response.slice(0, 65).toString("hex"));
   }
+
+  /**
+   * provides the name of a trusted binding of a plugin with a contract address and a supported method selector.
+   * This plugin will be called to interpret contract data in the following transaction signing command.
+   * 
+   * @param payload external plugin data
+   * @param signature signature for the plugin
+   * @returns boolean. It's `true` when set plugin successfully.
+   */
+  setExternalPlugin(payload: string, signature: string): Promise<boolean> {
+    const payloadBuffer = Buffer.from(payload, 'hex');
+    const signatureBuffer = Buffer.from(signature, 'hex');
+    const buffer = Buffer.concat([payloadBuffer, signatureBuffer]);
+
+    return this.transport.send(0xe0, 0x12, 0x00, 0x00, buffer).then(() => true,
+      e => {
+        if (e && e.statusCode === 0x6700) {
+          // the plugin name is too short or too long
+          return false;
+        } else if (e && e.statusCode === 0x6a80) {
+          // the signature does not match the plugin data
+          return false;
+        } else if (e && e.statusCode === 0x6984) {
+          // the plugin requested is not installed on the device
+          return false;
+        }
+        console.error('[hw-app-trx]: setExternalPlugin: error ' + String(e));
+        throw e;
+      })
+  }
+
 }

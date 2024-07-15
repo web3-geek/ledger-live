@@ -4235,6 +4235,12 @@ importers:
       '@ledgerhq/hw-transport':
         specifier: workspace:^
         version: link:../hw-transport
+      axios:
+        specifier: ^1.7.2
+        version: 1.7.2
+      bs58check:
+        specifier: ^4.0.0
+        version: 4.0.0
     devDependencies:
       '@ledgerhq/hw-transport-mocker':
         specifier: workspace:^
@@ -41838,7 +41844,7 @@ snapshots:
 
   '@types/jsdom@20.0.1':
     dependencies:
-      '@types/node': 20.12.12
+      '@types/node': 20.12.13
       '@types/tough-cookie': 4.0.5
       parse5: 7.1.2
 
@@ -51992,7 +51998,7 @@ snapshots:
       '@jest/fake-timers': 29.7.0
       '@jest/types': 29.6.3
       '@types/jsdom': 20.0.1
-      '@types/node': 20.12.12
+      '@types/node': 20.12.13
       jest-mock: 29.7.0
       jest-util: 29.7.0
       jsdom: 20.0.3

@@ -39,17 +39,22 @@ For a smooth and quick integration:
     *   [signTransactionHash](#signtransactionhash)
         *   [Parameters](#parameters-3)
         *   [Examples](#examples-3)
-    *   [getAppConfiguration](#getappconfiguration)
-        *   [Examples](#examples-4)
-    *   [signPersonalMessage](#signpersonalmessage)
+    *   [clearSignTransaction](#clearsigntransaction)
         *   [Parameters](#parameters-4)
+        *   [Examples](#examples-4)
+    *   [getAppConfiguration](#getappconfiguration)
         *   [Examples](#examples-5)
-    *   [signTIP712HashedMessage](#signtip712hashedmessage)
+    *   [signPersonalMessage](#signpersonalmessage)
         *   [Parameters](#parameters-5)
         *   [Examples](#examples-6)
-    *   [getECDHPairKey](#getecdhpairkey)
+    *   [signTIP712HashedMessage](#signtip712hashedmessage)
         *   [Parameters](#parameters-6)
         *   [Examples](#examples-7)
+    *   [getECDHPairKey](#getecdhpairkey)
+        *   [Parameters](#parameters-7)
+        *   [Examples](#examples-8)
+    *   [setExternalPlugin](#setexternalplugin)
+        *   [Parameters](#parameters-8)
 
 ### Trx
 
@@ -59,6 +64,7 @@ Tron API
 
 *   `transport` **Transport**&#x20;
 *   `scrambleKey`   (optional, default `"TRX"`)
+*   `loadConfig` **LoadConfig**  (optional, default `{}`)
 
 #### Examples
 
@@ -93,11 +99,17 @@ sign a Tron transaction with a given BIP 32 path and Token Names
 *   `path` **[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)** a path in BIP 32 format
 *   `rawTxHex` **[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)** a raw transaction hex string
 *   `tokenSignatures` **[Array](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array)<[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)>** Tokens Signatures array
+*   `resolution` **(LedgerTrxTransactionResolution | null)?** plugin infomations for clear sign. Only supported when sign a TriggerSmartContract transaction.
+    \- If the value is "null", clear sign will be disabled.
+    \- If the value is "undefined", default resolution will be used.
 
 ##### Examples
 
 ```javascript
-const signature = await tron.signTransaction("44'/195'/0'/0/0", "0a02f5942208704dda506d59dceb40f0f4978f802e5a69080112650a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412340a1541978dbd103cfe59c35e753d09dd44ae1ae64621c7121541e2ae49db6a70b9b4757d2137a43b69b24a445780188ef8b5ba0470cbb5948f802e", [], 105);
+import { ledgerService } from '@ledgerhq/hw-app-trx';
+const rawTxHex = "0a0267a42208cb83283f5927a5e040c8badeb489325ab001081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541e2ae49db6a70b9b4757d2137a43b69b24a4457801215410e1bce983f78f8913002c3f7e52daf78de6da2cb2244a9059cbb000000000000000000000000573708726db88a32c1b9c828fef508577cfb8483000000000000000000000000000000000000000000000000000000000000000a286470a6f8dab48932900180ade204";
+const resolution = await ledgerService.resolveTransaction(rawTxHex);
+const signature = await tron.signTransaction("44'/195'/0'/0/0", rawTxHex, [], resolution);
 ```
 
 Returns **[Promise](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise)<[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)>** a signature as hex string
@@ -119,6 +131,23 @@ const signature = await tron.signTransactionHash("44'/195'/0'/0/0", "25b18a55f86
 ```
 
 Returns **[Promise](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise)<[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)>** a signature as hex string
+
+#### clearSignTransaction
+
+sign a Tron transaction with a given BIP 32 using clear signing. This method will use default plugin service to resolve the plugin for transaction.
+
+##### Parameters
+
+*   `path` **[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)** a path in BIP 32 format
+*   `rawTxHex` **[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)** a raw transaction hex string
+
+##### Examples
+
+```javascript
+const signature = await tron.clearSignTransaction("44'/195'/0'/0/0", "0a0267a42208cb83283f5927a5e040c8badeb489325ab001081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541e2ae49db6a70b9b4757d2137a43b69b24a4457801215410e1bce983f78f8913002c3f7e52daf78de6da2cb2244a9059cbb000000000000000000000000573708726db88a32c1b9c828fef508577cfb8483000000000000000000000000000000000000000000000000000000000000000a286470a6f8dab48932900180ade204");
+```
+
+Returns **any** a signature as hex string
 
 #### getAppConfiguration
 
@@ -190,3 +219,15 @@ const signature = await tron.getECDHPairKey("44'/195'/0'/0/0", "04ff21f8e64d3a3c
 ```
 
 Returns **[Promise](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise)<[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)>** shared key hex string,
+
+#### setExternalPlugin
+
+provides the name of a trusted binding of a plugin with a contract address and a supported method selector.
+This plugin will be called to interpret contract data in the following transaction signing command.
+
+##### Parameters
+
+*   `payload` **[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)** external plugin data
+*   `signature` **[string](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String)** signature for the plugin
+
+Returns **[Promise](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise)<[boolean](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean)>** boolean. It's `true` when set plugin successfully.
